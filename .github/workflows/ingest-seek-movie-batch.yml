@@ -1,0 +1,80 @@
+name: SeekStreaming Movie Batch Ingest
+on:
+  workflow_dispatch:
+    inputs:
+      movies_json:  { required: true }   # JSON array of movie job objects
+      seek_cookies: { required: false, default: '' }
+      streamhg_key: { required: false, default: '' }
+      upload_provider: { required: false, default: 'streamhg' }
+      callback_url: { required: true }
+      site_name:    { required: false, default: 'ApexStreaming.org' }
+      hf_token:     { required: false, default: '' }
+      hf_repo:      { required: false, default: '' }
+      hf_backup_enabled: { required: false, default: 'false' }
+      internal_token: { required: true }
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Print Job Summary
+        env:
+          MOVIES_JSON: ${{ github.event.inputs.movies_json }}
+        run: |
+          echo "### SeekStreaming Movie Batch Ingest" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Site Name**: ${{ github.event.inputs.site_name }}" | tee -a $GITHUB_STEP_SUMMARY
+          COUNT=$(echo "$MOVIES_JSON" | jq 'length')
+          echo "- **Movies in Batch**: $COUNT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" | tee -a $GITHUB_STEP_SUMMARY
+          echo "#### Movie List" | tee -a $GITHUB_STEP_SUMMARY
+          echo "$MOVIES_JSON" | jq -r '.[] | "- **\(.base_title) (\(.year))** [\(.quality)]"' | tee -a $GITHUB_STEP_SUMMARY || echo "Failed to parse movies JSON" | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Background Disk Cleanup
+        run: |
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /usr/local/share/boost &
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" &
+          echo "Disk cleanup started in background. Proceeding to setup..."
+
+      - uses: actions/checkout@v4
+
+      - name: Setup Tools (Fast Static Binaries)
+        run: |
+          # 1. Ensure aria2 & ffmpeg are present (pre-installed on standard GitHub runners)
+          command -v aria2c >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends aria2 || true
+          command -v ffmpeg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ffmpeg || true
+
+          # 2. Fallback for ffmpeg/ffprobe if not already in PATH
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            echo "Installing static ffmpeg/ffprobe fallback..."
+            wget -qO- https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ --strip-components=1 -C /tmp
+            sudo mv /tmp/ffmpeg /tmp/ffprobe /usr/local/bin/
+            sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+
+          # 3. Install official verified yt-dlp & huggingface_hub via pip (PyPI CDN, ~3s runtime)
+          sudo pip install --break-system-packages --ignore-installed --no-cache-dir yt-dlp huggingface_hub
+
+          # 4. Verify all required tools
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+          yt-dlp --version
+          aria2c --version | head -n 1
+          df -h .
+
+      - name: Run Movie Batch Pipeline
+        run: node scripts/ingest/movie-batch-orchestrator.cjs
+        env:
+          MOVIES_JSON:        "${{ github.event.inputs.movies_json }}"
+          SEEK_COOKIES:       "${{ github.event.inputs.seek_cookies || secrets.SEEK_COOKIES }}"
+          CALLBACK_URL:       "${{ github.event.inputs.callback_url }}"
+          SITE_NAME:          "${{ github.event.inputs.site_name }}"
+          UPLOAD_PROVIDER:    "${{ github.event.inputs.upload_provider }}"
+          STREAMHG_KEY:       "${{ github.event.inputs.streamhg_key || secrets.STREAMHG_KEY }}"
+          HF_TOKEN:           "${{ github.event.inputs.hf_token || secrets.HF_TOKEN }}"
+          HF_REPO:            "${{ github.event.inputs.hf_repo || secrets.HF_REPO }}"
+          HF_BACKUP_ENABLED:  "${{ github.event.inputs.hf_backup_enabled }}"
+          INTERNAL_TOKEN:     "${{ github.event.inputs.internal_token || secrets.INTERNAL_API_TOKEN || secrets.INTERNAL_TOKEN }}"

@@ -1,0 +1,177 @@
+name: SeekStreaming Ingest
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:       { required: true }
+      post_id:      { required: true }
+      source_url:   { required: true }
+      fallback_url: { required: false, default: '' }
+      filename:     { required: true }
+      seek_cookies: { required: false, default: '' }
+      streamhg_key: { required: false, default: '' }
+      upload_provider: { required: false, default: 'streamhg' }
+      callback_url: { required: true }
+      type:         { required: false, default: 'seekstreaming' }
+      base_title:   { required: false }
+      year:         { required: false }
+      description:  { required: false }
+      site_name:    { required: false }
+      quality:      { required: false }
+      season_number: { required: false, default: '' }
+      episode_number: { required: false, default: '' }
+      folder_id:    { required: false, default: '' }
+      hf_token:     { required: false, default: '' }
+      hf_repo:      { required: false, default: '' }
+      hf_backup_enabled: { required: false, default: 'false' }
+      internal_token: { required: true }
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Print Job Summary
+        run: |
+          echo "### SeekStreaming Ingest Job Summary" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Job ID**: ${{ github.event.inputs.job_id }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Post ID**: ${{ github.event.inputs.post_id }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Title**: ${{ github.event.inputs.base_title }} (${{ github.event.inputs.year }})" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Season/Episode**: S${{ github.event.inputs.season_number }}E${{ github.event.inputs.episode_number }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Quality**: ${{ github.event.inputs.quality }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Filename**: ${{ github.event.inputs.filename }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Type**: ${{ github.event.inputs.type }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "- **Source URL**: ${{ github.event.inputs.source_url }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" | tee -a $GITHUB_STEP_SUMMARY
+          echo "This job will download the video, process metadata, and upload to SeekStreaming." | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Background Disk Cleanup
+        run: |
+          # Start reclaiming ~30GB in the background so we don't wait 2 minutes
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /usr/local/share/boost &
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" &
+          echo "Cleanup started in background. Proceeding to setup..."
+
+      - uses: actions/checkout@v4
+
+      - name: Register GitHub Run ID
+        run: |
+          curl -s -X POST "${{ github.event.inputs.callback_url }}/api/v1/internal/ingest/progress" \
+            -H "Authorization: Bearer ${{ github.event.inputs.internal_token }}" \
+            -H "Content-Type: application/json" \
+            -d '{"job_id": "${{ github.event.inputs.job_id }}", "status": "starting", "progress_pct": 0, "gh_run_id": "${{ github.run_id }}"}' || true
+
+      - name: Setup Tools (Fast Static Binaries)
+        run: |
+          # 1. Ensure aria2 & ffmpeg are present (pre-installed on standard GitHub runners)
+          command -v aria2c >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends aria2 || true
+          command -v ffmpeg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ffmpeg || true
+
+          # 2. Fallback for ffmpeg/ffprobe if not already in PATH
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            echo "Installing static ffmpeg/ffprobe fallback..."
+            wget -qO- https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ --strip-components=1 -C /tmp
+            sudo mv /tmp/ffmpeg /tmp/ffprobe /usr/local/bin/
+            sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+
+          # 3. Install official verified yt-dlp & huggingface_hub via pip (PyPI CDN, ~3s runtime)
+          sudo pip install --break-system-packages --ignore-installed --no-cache-dir yt-dlp huggingface_hub
+
+          # 4. Verify all required tools
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+          yt-dlp --version
+          aria2c --version | head -n 1
+
+      - name: Download Video (Real-time Progress)
+        run: node scripts/ingest/download-video.cjs
+        env:
+          SOURCE_URL: "${{ github.event.inputs.source_url }}"
+          FALLBACK_URL: "${{ github.event.inputs.fallback_url }}"
+          OUTPUT_FILE: "${{ github.event.inputs.filename }}"
+          JOB_ID: "${{ github.event.inputs.job_id }}"
+          CALLBACK_URL: "${{ github.event.inputs.callback_url }}"
+          INTERNAL_TOKEN:     "${{ github.event.inputs.internal_token || secrets.INTERNAL_API_TOKEN || secrets.INTERNAL_TOKEN }}"
+          GITHUB_RUN_ID: "${{ github.run_id }}"
+
+      - name: Process Metadata (Real-time Progress)
+        id: processor
+        run: node scripts/ingest/process-metadata.cjs
+        env:
+          INPUT_FILE: "${{ github.event.inputs.filename }}"
+          BASE_TITLE: "${{ github.event.inputs.base_title }}"
+          YEAR: "${{ github.event.inputs.year }}"
+          SITE_NAME: "${{ github.event.inputs.site_name }}"
+          TARGET_QUALITY: "${{ github.event.inputs.quality }}"
+          SEASON_NUMBER: "${{ github.event.inputs.season_number }}"
+          EPISODE_NUMBER: "${{ github.event.inputs.episode_number }}"
+          JOB_ID: "${{ github.event.inputs.job_id }}"
+          CALLBACK_URL: "${{ github.event.inputs.callback_url }}"
+          INTERNAL_TOKEN:     "${{ github.event.inputs.internal_token || secrets.INTERNAL_API_TOKEN || secrets.INTERNAL_TOKEN }}"
+          GITHUB_RUN_ID: "${{ github.run_id }}"
+
+      - name: Upload to Video Host & Hugging Face (Parallel Dual Upload)
+        run: |
+          FILE="${{ steps.processor.outputs.final_filename }}"
+          PROV="${{ github.event.inputs.upload_provider }}"
+
+          CLEAN_TITLE=$(echo "${{ github.event.inputs.base_title }}" | sed -e 's/([^)]*)//g' -e 's/[^a-zA-Z0-9.-]/./g' | sed -e 's/\.\.*/\./g' -e 's/^\.//' -e 's/\.$//')
+          if [ -n "${{ github.event.inputs.season_number }}" ]; then
+            S_NUM=$(printf "%02d" "${{ github.event.inputs.season_number }}")
+            HF_TARGET_PATH="apexstream/series/${CLEAN_TITLE}.${{ github.event.inputs.year }}/Season.${S_NUM}/$(basename "$FILE")"
+          else
+            HF_TARGET_PATH="apexstream/movies/${CLEAN_TITLE}.${{ github.event.inputs.year }}/$(basename "$FILE")"
+          fi
+          export HF_TARGET_PATH
+
+          HF_PID=""
+          if [ -n "${{ github.event.inputs.hf_token }}" ] && [ -n "${{ github.event.inputs.hf_repo }}" ] && [ "${{ github.event.inputs.hf_backup_enabled }}" != "false" ]; then
+            echo "[Pipeline] Starting Hugging Face parallel backup upload for $HF_TARGET_PATH..."
+            node scripts/ingest/upload-huggingface.cjs &
+            HF_PID=$!
+          fi
+
+          if [ "$PROV" = "seekstreaming" ]; then
+            node scripts/ingest/upload-seek.cjs
+          else
+            node scripts/ingest/upload-streamhg.cjs
+          fi
+
+          if [ -n "$HF_PID" ]; then
+            wait $HF_PID || echo "[Pipeline] Hugging Face background upload finished with warning"
+          fi
+        env:
+          GITHUB_RUN_ID: "${{ github.run_id }}"
+          FILE_PATH: "${{ steps.processor.outputs.final_filename }}"
+          AUDIO_LANGUAGES: "${{ steps.processor.outputs.audio_languages }}"
+          SUBTITLE_LANGUAGES: "${{ steps.processor.outputs.subtitle_languages }}"
+          STREAMHG_KEY:       "${{ github.event.inputs.streamhg_key || secrets.STREAMHG_KEY }}"
+          STREAMHG_FOLDER_ID: "${{ github.event.inputs.folder_id }}"
+          SEEK_COOKIES:       "${{ github.event.inputs.seek_cookies || secrets.SEEK_COOKIES }}"
+          JOB_ID: "${{ github.event.inputs.job_id }}"
+          SEEK_FOLDER_ID: "${{ github.event.inputs.folder_id }}"
+          HF_TOKEN:           "${{ github.event.inputs.hf_token || secrets.HF_TOKEN }}"
+          HF_REPO:            "${{ github.event.inputs.hf_repo || secrets.HF_REPO }}"
+          CALLBACK_URL: "${{ github.event.inputs.callback_url }}"
+          INTERNAL_TOKEN:     "${{ github.event.inputs.internal_token || secrets.INTERNAL_API_TOKEN || secrets.INTERNAL_TOKEN }}"
+
+      - name: Callback
+        if: always()
+        run: |
+          if [ -f "ingest-result-${{ github.event.inputs.job_id }}.json" ]; then
+            if [ -f "hf-result-${{ github.event.inputs.job_id }}.json" ]; then
+              jq -s '.[0] * .[1]' "ingest-result-${{ github.event.inputs.job_id }}.json" "hf-result-${{ github.event.inputs.job_id }}.json" > merged.json && mv merged.json "ingest-result-${{ github.event.inputs.job_id }}.json"
+            fi
+            curl -X POST "${{ github.event.inputs.callback_url }}/api/v1/internal/ingest/callback" \
+              -H "Authorization: Bearer ${{ github.event.inputs.internal_token }}" \
+              -H "Content-Type: application/json" \
+              -d @ingest-result-${{ github.event.inputs.job_id }}.json
+          else
+            curl -X POST "${{ github.event.inputs.callback_url }}/api/v1/internal/ingest/callback" \
+              -H "Authorization: Bearer ${{ github.event.inputs.internal_token }}" \
+              -H "Content-Type: application/json" \
+              -d '{"job_id": "${{ github.event.inputs.job_id }}", "status": "error", "error": "Runner failed before result creation"}'
+          fi
