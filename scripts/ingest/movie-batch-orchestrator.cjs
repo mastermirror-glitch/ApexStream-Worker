@@ -401,9 +401,18 @@ async function uploadMovie(movie) {
     console.log(`[UP] ✓ ${label}: videoId=${result.videoId}${hfData?.hf_url ? ' (HF Backup ✓)' : ''}`);
     await callback(movie.job_id, result.videoId, null, movie.processedFile, movie.audioLanguages || [], movie.subtitleLanguages || [], hfData);
   } catch (err) {
-    console.error(`[UP] ✗ ${label}: ${err.message}`);
+    let finalError = err.message;
+    const resultFile = `ingest-result-${movie.job_id}.json`;
+    if (fs.existsSync(resultFile)) {
+      try {
+        const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+        if (result.error) finalError = result.error;
+        fs.unlinkSync(resultFile);
+      } catch (_) {}
+    }
+    console.error(`[UP] ✗ ${label}: ${finalError}`);
     if (movie.processedFile && fs.existsSync(movie.processedFile)) fs.unlinkSync(movie.processedFile);
-    await callback(movie.job_id, null, err.message, null, [], [], hfData);
+    await callback(movie.job_id, null, finalError, null, [], [], hfData);
   }
 }
 
@@ -461,11 +470,11 @@ async function main() {
   const movies = JSON.parse(MOVIES_JSON);
 
   const freeMB = getFreeDiskMB();
-  console.log(`[Orchestrator] Starting batch: ${movies.length} movies | DL:5 PROC:1 UP:5 | Disk: ${freeMB}MB free`);
+  console.log(`[Orchestrator] Starting batch: ${movies.length} movies | DL:5 PROC:1 UP:2 | Disk: ${freeMB}MB free`);
 
   const dlPool   = new Pool(5);
   const procPool = new Pool(1);
-  const upPool   = new Pool(5);
+  const upPool   = new Pool(2);
 
   await Promise.all(
     movies.map(movie =>

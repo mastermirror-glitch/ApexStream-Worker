@@ -380,9 +380,18 @@ async function uploadEpisode(ep) {
     console.log(`[UP] ✓ E${ep.episode_number}: videoId=${result.videoId}${hfData?.hf_url ? ' (HF Backup ✓)' : ''}`);
     await callback(ep.job_id, result.videoId, null, ep.processedFile, ep.audioLanguages || [], ep.subtitleLanguages || [], hfData);
   } catch (err) {
-    console.error(`[UP] ✗ E${ep.episode_number}: ${err.message}`);
+    let finalError = err.message;
+    const resultFile = `ingest-result-${ep.job_id}.json`;
+    if (fs.existsSync(resultFile)) {
+      try {
+        const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+        if (result.error) finalError = result.error;
+        fs.unlinkSync(resultFile);
+      } catch (_) {}
+    }
+    console.error(`[UP] ✗ E${ep.episode_number}: ${finalError}`);
     if (ep.processedFile && fs.existsSync(ep.processedFile)) { fs.unlinkSync(ep.processedFile); }
-    await callback(ep.job_id, null, err.message, null, [], [], hfData);
+    await callback(ep.job_id, null, finalError, null, [], [], hfData);
   }
 }
 
@@ -439,11 +448,11 @@ async function main() {
   if (!EPISODES_JSON) { console.error('[Orchestrator] EPISODES_JSON not set'); process.exit(1); }
   const episodes = JSON.parse(EPISODES_JSON);
   const freeMB = getFreeDiskMB();
-  console.log(`[Orchestrator] Starting: ${episodes.length} episodes | DL:5 PROC:1 UP:5 | Disk: ${freeMB}MB free`);
+  console.log(`[Orchestrator] Starting: ${episodes.length} episodes | DL:5 PROC:1 UP:2 | Disk: ${freeMB}MB free`);
 
   const dlPool   = new Pool(5);
   const procPool = new Pool(1);
-  const upPool   = new Pool(5);
+  const upPool   = new Pool(2);
 
   await Promise.all(
     episodes.map(ep =>

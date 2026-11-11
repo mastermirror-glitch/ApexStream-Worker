@@ -110,14 +110,16 @@ async function upload() {
       const uploadUrl = serverInfo.result;
       console.log(`[StreamHG] Upload server assigned: ${uploadUrl}`);
 
-      // 2. Spawn curl with streaming multipart upload
-      // Note: Do NOT use --speed-time or --speed-limit because video file processing
-      // on StreamHG's server can cause transfer pauses, triggering curl error 28 (timeout).
+      // 2. Spawn curl with streaming multipart upload using HTTP/1.1
+      // Note: Do NOT use -X POST with -F as it overrides curl's internal method state machine.
+      // Force --http1.1 to avoid HTTP/2 stream multiplex resets on high-throughput video uploads.
       const args = [
         '-s', '-S',
         '-#',
+        '--http1.1',
         '--connect-timeout', '60',
-        '-X', 'POST',
+        '--retry', '2',
+        '--retry-delay', '3',
         '-F', `key=${apiKey}`,
         '-F', `file=@${filePath}`,
       ];
@@ -136,6 +138,7 @@ async function upload() {
       console.log(`[StreamHG] Uploading via curl to ${uploadUrl}...`);
 
       let stdout = '';
+      let stderrText = '';
       let lastReportedPct = -1;
       let lastReportTime = 0;
 
@@ -147,6 +150,7 @@ async function upload() {
 
       curlProc.stderr.on('data', chunk => {
         const text = chunk.toString();
+        stderrText += text;
         // 1. Matches curl "-#" / "--progress-bar" (e.g. " 45.2% " or " 3% ")
         let match = text.match(/([\d\.]+)%/);
 
@@ -180,7 +184,12 @@ async function upload() {
       });
 
       if (exitCode !== 0) {
-        throw new Error(`curl exited with status ${exitCode}`);
+        const errorLines = stderrText
+          .split(/[\r\n]+/)
+          .map(l => l.trim())
+          .filter(l => l && !l.includes('%') && !l.match(/^[#=\s]+$/));
+        const cleanErr = errorLines.pop() || `curl exited with status ${exitCode}`;
+        throw new Error(cleanErr);
       }
 
       console.log('[StreamHG] Raw upload response:', stdout.trim());
