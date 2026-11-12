@@ -175,7 +175,8 @@ async function run() {
     .find(k => inputFile.toUpperCase().includes(k.toUpperCase())) || '';
 
   // 2. Build New Filename (SxxExx format)
-  let namePart = baseTitle.replace(/\(\d{4}\)/g, '').trim().replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '.');
+  // Strip characters forbidden on filesystems or reserved in curl form-data parsers (commas, semicolons, quotes, etc.)
+  let namePart = baseTitle.replace(/\(\d{4}\)/g, '').trim().replace(/[<>:"/\\|?*,;`$]/g, '').replace(/\s+/g, '.').replace(/\.+/g, '.');
 
   let episodePart = '';
   if (seasonNumber) {

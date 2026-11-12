@@ -113,6 +113,8 @@ async function upload() {
       // 2. Spawn curl with streaming multipart upload using HTTP/1.1
       // Note: Do NOT use -X POST with -F as it overrides curl's internal method state machine.
       // Force --http1.1 to avoid HTTP/2 stream multiplex resets on high-throughput video uploads.
+      // Quote the file path to prevent curl from splitting filenames that contain commas or special symbols
+      const escapedPath = filePath.replace(/"/g, '\\"');
       const args = [
         '-s', '-S',
         '-#',
@@ -121,7 +123,7 @@ async function upload() {
         '--retry', '2',
         '--retry-delay', '3',
         '-F', `key=${apiKey}`,
-        '-F', `file=@${filePath}`,
+        '-F', `file=@"${escapedPath}"`,
       ];
 
       if (fileTitle) {
@@ -194,20 +196,38 @@ async function upload() {
 
       console.log('[StreamHG] Raw upload response:', stdout.trim());
 
-      // 3. Parse response
+      // 3. Parse response and detect HTML server errors (413, 500, Cloudflare)
+      const rawOutput = stdout.trim();
+      if (rawOutput.includes('413 Request Entity Too Large') || rawOutput.includes('413 Payload Too Large')) {
+        throw new Error('StreamHG upload failed: File too large (HTTP 413 Request Entity Too Large on storage server)');
+      }
+      if (rawOutput.includes('500 ERROR') || rawOutput.includes('500 Internal Server Error')) {
+        throw new Error('StreamHG upload failed: Storage server failure (HTTP 500 Internal Server Error)');
+      }
+
       let resJson;
       try {
-        resJson = JSON.parse(stdout.trim());
+        resJson = JSON.parse(rawOutput);
       } catch (e) {
-        throw new Error(`Invalid JSON received from StreamHG: ${stdout}`);
+        // Extract HTML title if present for clean reporting
+        const titleMatch = rawOutput.match(/<title>([^<]+)<\/title>/i);
+        const htmlTitle = titleMatch ? titleMatch[1].trim() : '';
+        throw new Error(`Invalid JSON received from StreamHG: ${htmlTitle || rawOutput.slice(0, 150)}`);
       }
 
       if (resJson.status !== 200 || !resJson.files || !resJson.files[0]?.filecode) {
         const fileStatus = resJson.files?.[0]?.status || '';
         const isLimit = fileStatus.includes('too many files today') || (resJson.msg && resJson.msg.includes('too many files'));
-        const errDetail = isLimit
-          ? 'STREAMHG_LIMIT_REACHED: too many files today (200/day limit exceeded)'
-          : (fileStatus || resJson.msg || 'Missing filecode in response');
+        let errDetail = '';
+        if (isLimit) {
+          errDetail = 'STREAMHG_LIMIT_REACHED: too many files today (200/day limit exceeded)';
+        } else if (fileStatus && fileStatus !== 'OK') {
+          errDetail = fileStatus;
+        } else if (resJson.msg && resJson.msg !== 'OK') {
+          errDetail = resJson.msg;
+        } else {
+          errDetail = 'StreamHG did not return a filecode (duplicate upload or server processing hold)';
+        }
         const err = new Error(`StreamHG upload failed: ${errDetail}`);
         if (isLimit) {
           err.isDailyLimit = true;
