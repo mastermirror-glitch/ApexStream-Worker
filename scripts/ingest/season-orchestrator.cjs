@@ -312,14 +312,16 @@ async function uploadEpisode(ep) {
   try {
     const uploadScript = UPLOAD_PROVIDER === 'streamhg'
       ? 'scripts/ingest/upload-streamhg.cjs'
-      : 'scripts/ingest/upload-seek.cjs';
+      : (UPLOAD_PROVIDER === 'lulustream'
+        ? 'scripts/ingest/upload-lulustream.cjs'
+        : 'scripts/ingest/upload-seek.cjs');
 
     const epPad = String(ep.episode_number).padStart(2, '0');
     const sPad = String(ep.season_number || 1).padStart(2, '0');
     const normalizedTitle = (BASE_TITLE || 'series').replace(/\(\d{4}\)/g, '').trim().replace(/[<>:"/\\|?*']/g, '').replace(/\s+/g, '.') + (YEAR ? `.${YEAR}` : '');
     const hfTargetPath = `apexstream/series/${normalizedTitle}/Season.${sPad}/${path.basename(ep.processedFile)}`;
 
-    // Parallel Dual Upload: StreamHG + Hugging Face
+    // Parallel Dual Upload: StreamHG/LuluStream + Hugging Face
     const uploadTasks = [
       spawnAsync('node', [uploadScript], {
         env: {
@@ -327,9 +329,11 @@ async function uploadEpisode(ep) {
           FILE_PATH: ep.processedFile,
           SEEK_COOKIES,
           STREAMHG_KEY,
+          LULUSTREAM_KEY: STREAMHG_KEY,
           JOB_ID: ep.job_id,
           SEEK_FOLDER_ID: process.env.SEEK_FOLDER_ID || '',
           STREAMHG_FOLDER_ID: process.env.STREAMHG_FOLDER_ID || process.env.SEEK_FOLDER_ID || '',
+          LULUSTREAM_FOLDER_ID: process.env.STREAMHG_FOLDER_ID || process.env.SEEK_FOLDER_ID || '',
           FILE_TITLE: path.basename(ep.processedFile),
         },
       })

@@ -335,12 +335,14 @@ async function uploadMovie(movie) {
   try {
     const uploadScript = UPLOAD_PROVIDER === 'streamhg'
       ? 'scripts/ingest/upload-streamhg.cjs'
-      : 'scripts/ingest/upload-seek.cjs';
+      : (UPLOAD_PROVIDER === 'lulustream'
+        ? 'scripts/ingest/upload-lulustream.cjs'
+        : 'scripts/ingest/upload-seek.cjs');
 
     const normalizedTitle = (movie.base_title || 'movie').replace(/\(\d{4}\)/g, '').trim().replace(/[<>:"/\\|?*']/g, '').replace(/\s+/g, '.') + (movie.year ? `.${movie.year}` : '');
     const hfTargetPath = `apexstream/movies/${normalizedTitle}/${path.basename(movie.processedFile)}`;
 
-    // Parallel Dual Upload: StreamHG + Hugging Face
+    // Parallel Dual Upload: StreamHG/LuluStream + Hugging Face
     const uploadTasks = [
       spawnAsync('node', [uploadScript], {
         env: {
@@ -348,9 +350,11 @@ async function uploadMovie(movie) {
           FILE_PATH: movie.processedFile,
           SEEK_COOKIES,
           STREAMHG_KEY,
+          LULUSTREAM_KEY: STREAMHG_KEY,
           JOB_ID: movie.job_id,
           SEEK_FOLDER_ID: movie.folder_id || '',
           STREAMHG_FOLDER_ID: movie.folder_id || '',
+          LULUSTREAM_FOLDER_ID: movie.folder_id || '',
           FILE_TITLE: path.basename(movie.processedFile),
         },
       })

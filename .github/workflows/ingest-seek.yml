@@ -136,6 +136,8 @@ jobs:
 
           if [ "$PROV" = "seekstreaming" ]; then
             node scripts/ingest/upload-seek.cjs
+          elif [ "$PROV" = "lulustream" ]; then
+            node scripts/ingest/upload-lulustream.cjs
           else
             node scripts/ingest/upload-streamhg.cjs
           fi
@@ -150,6 +152,8 @@ jobs:
           SUBTITLE_LANGUAGES: "${{ steps.processor.outputs.subtitle_languages }}"
           STREAMHG_KEY:       "${{ github.event.inputs.streamhg_key || secrets.STREAMHG_KEY }}"
           STREAMHG_FOLDER_ID: "${{ github.event.inputs.folder_id }}"
+          LULUSTREAM_KEY: "${{ github.event.inputs.streamhg_key }}"
+          LULUSTREAM_FOLDER_ID: "${{ github.event.inputs.folder_id }}"
           SEEK_COOKIES:       "${{ github.event.inputs.seek_cookies || secrets.SEEK_COOKIES }}"
           JOB_ID: "${{ github.event.inputs.job_id }}"
           SEEK_FOLDER_ID: "${{ github.event.inputs.folder_id }}"
